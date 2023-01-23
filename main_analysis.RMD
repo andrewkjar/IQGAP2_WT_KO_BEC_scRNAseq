@@ -1,0 +1,267 @@
+# Import necessary libraries
+library(dplyr)
+library(Seurat)
+library(DoubletFinder)
+library(CellChat)
+
+# Read in data from each experiment
+so.mouse.WT.data <- Read10X("filtered_feature_bc_matrix_1/outs/filtered_feature_bc_matrix")
+so.mouse.WT <- CreateSeuratObject(counts = so.mouse.WT.data, project = "WT", min.cells = 3, min.features = 200)
+so.mouse.KO.data <- Read10X("filtered_feature_bc_matrix_3/outs/filtered_feature_bc_matrix") 
+so.mouse.KO <- CreateSeuratObject(counts = so.mouse.KO.data, project = "KO", min.cells = 3, min.features = 200)
+
+# Filter, normalize, scale, and find the variable genes for each data set.
+so.mouse.WT[["percent.mt"]] <- PercentageFeatureSet(so.mouse.WT, pattern = "^mt-")
+so.mouse.WT <- subset(so.mouse.WT, subset = nCount_RNA > 1200 & nCount_RNA < 20000 & percent.mt < 10)
+so.mouse.WT <- NormalizeData(so.mouse.WT)
+so.mouse.WT <- FindVariableFeatures(so.mouse.WT, selection.method = "vst", nfeatures = 2000)
+so.mouse.WT <- ScaleData(so.mouse.WT)
+
+so.mouse.KO[["percent.mt"]] <- PercentageFeatureSet(so.mouse.KO, pattern = "^mt-")
+so.mouse.KO <- subset(so.mouse.KO, subset = nCount_RNA > 1200 & nCount_RNA < 20000 & percent.mt < 5)
+so.mouse.KO <- NormalizeData(so.mouse.KO)
+so.mouse.KO <- FindVariableFeatures(so.mouse.KO, selection.method = "vst", nfeatures = 2000)
+so.mouse.KO <- ScaleData(so.mouse.KO)
+
+# Take the union of all the most representated genes from each dataset.
+hvg <- unique(c(so.mouse.WT@assays$RNA@var.features, so.mouse.KO@assays$RNA@var.features))
+
+# Add a sample column
+so.mouse.WT@meta.data[,"sample"] <- "WT"
+so.mouse.KO@meta.data[,"sample"] <- "KO"
+
+# Select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = c(so.mouse.WT,so.mouse.KO))
+# Find anchors with which to integrate data
+gene.anchors <- FindIntegrationAnchors(object.list = c(so.mouse.WT,so.mouse.KO), anchor.features = features)
+# Create integrated dataset
+so.mouse <- IntegrateData(anchorset = gene.anchors)
+# Specify that we will perform downstream analysis on the corrected data, note that the original unmodified data still resides in the 'RNA' assay
+DefaultAssay(so.mouse) <- "integrated"
+
+# Define an order of sample identities
+sample_levels <- c('WT','KO')
+so.mouse$sample <- factor(x = so.mouse$sample, levels = sample_levels)
+
+# Rescale data and do dimension reduction
+so.mouse <- ScaleData(so.mouse, verbose = FALSE)
+so.mouse <- RunPCA(so.mouse, npcs = 50, verbose = FALSE)
+so.mouse <- RunUMAP(so.mouse, reduction = "pca", dims = 1:50)
+so.mouse <- FindNeighbors(so.mouse, reduction = "pca", dims = 1:50)
+so.mouse <- FindClusters(so.mouse, resolution = 0.25)
+
+# Individually process each dataset to prepare for doublet detection
+so.mouse.WT <- subset(so.mouse, orig.ident == 'WT')
+DefaultAssay(so.mouse.WT) <- "RNA"
+so.mouse.WT <- NormalizeData(so.mouse.WT)
+so.mouse.WT <- FindVariableFeatures(so.mouse.WT, selection.method = "vst", nfeatures = 2000)
+so.mouse.WT <- ScaleData(so.mouse.WT)
+so.mouse.WT <- RunPCA(so.mouse.WT)
+so.mouse.WT <- RunUMAP(so.mouse.WT, dims = 1:50)
+
+so.mouse.KO <- subset(so.mouse, orig.ident == 'KO')
+DefaultAssay(so.mouse.KO) <- "RNA"
+so.mouse.KO <- NormalizeData(so.mouse.KO)
+so.mouse.KO <- FindVariableFeatures(so.mouse.KO, selection.method = "vst", nfeatures = 2000)
+so.mouse.KO <- ScaleData(so.mouse.KO)
+so.mouse.KO <- RunPCA(so.mouse.KO)
+so.mouse.KO <- RunUMAP(so.mouse.KO, dims = 1:50)
+
+# Prepare WT object for DoubletFinder
+sweep.res.lis <- paramSweep_v3(so.mouse.WT, PCs = 1:50, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.lis, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+homotypic.prop <- modelHomotypic(so.mouse.WT$seurat_clusters)           
+nExp_poi <- round(0.075*nrow(so.mouse.WT@meta.data))  
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+
+## Run DoubletFinder
+so.mouse.WT <- doubletFinder_v3(so.mouse.WT, PCs = 1:10, pN = 0.25, pK = 0.09, nExp = nExp_poi, reuse.pANN = FALSE, sct = FALSE)
+
+# Prepare KO object for Doublet Finder
+sweep.res.lis <- paramSweep_v3(so.mouse.KO, PCs = 1:50, sct = FALSE)
+sweep.stats <- summarizeSweep(sweep.res.lis, GT = FALSE)
+bcmvn <- find.pK(sweep.stats)
+homotypic.prop <- modelHomotypic(so.mouse.KO$seurat_clusters)           
+nExp_poi <- round(0.075*nrow(so.mouse.KO@meta.data))  
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+
+## Run DoubletFinder
+so.mouse.KO <- doubletFinder_v3(so.mouse.KO, PCs = 1:10, pN = 0.25, pK = 0.09, nExp = nExp_poi, reuse.pANN = FALSE, sct = FALSE)
+
+# Transfer doublet predictions to the main seurat object
+doublets <- as.data.frame(so.mouse$orig.ident)
+doublets$cell <- row.names(doublets)
+doublets$cellorder <- 1:length(doublets$cell)
+
+doublets.WT <- as.data.frame(so.mouse.WT$DF.classifications_0.25_0.09_220)
+doublets.WT$cell <- row.names(doublets.WT)
+doublets.KO <- as.data.frame(so.mouse.KO$DF.classifications_0.25_0.09_239)
+doublets.KO$cell <- row.names(doublets.KO)
+
+doublets <- merge(doublets, doublets.WT, by = 'cell', sort = F, all.x = T)
+doublets <- merge(doublets, doublets.KO, by = 'cell', sort = F, all.x = T)
+
+doublets <- doublets[order(doublets$cellorder),]
+doublets$classification <- gsub('NA','',gsub(' ','',paste(doublets$`so.mouse.WT$DF.classifications_0.25_0.09_220`, doublets$`so.mouse.KO$DF.classifications_0.25_0.09_239`)))
+
+so.mouse$doublet <- doublets$classification
+
+# Save pre-filtered RDS
+saveRDS(so.mouse, "2022.09.14_so.mouse_pre-DoubletFiltering.RDS")
+
+# Subset data so it only includes singlets
+so.mouse <- subset(so.mouse, doublet == 'Singlet')
+
+# Label clusters based on marker genes
+so.mouse$cell_type <- so.mouse$seurat_clusters
+so.mouse$cell_type <- recode(so.mouse$cell_type, 
+                                "0" = "EC",
+                                "1"="MNC",
+                                "2"="EC",
+                                "3"="T_cell",
+                                "4"="EC",
+                                "5"="EC",
+                                "6"="EC/PC",
+                                "7"="B_cell",
+                                "8"="EC/AC",
+                                "9"="MG",
+                                "10"="MNC",
+                                "11"="AC",
+                                "12"="EC_hb",
+                                "13"="OLG",
+                                "14"="EC_plvap",
+                                "15"="Fibroblast")
+
+# Define order of cell subtypes
+cell_type_levels <- c('EC_plvap','EC/AC','EC/PC','EC_hb','EC','Fibroblast','B_cell','MNC','T_cell','MG','OLG','AC')
+so.mouse$cell_type <- factor(x = so.mouse$cell_type, levels = cell_type_levels)
+
+# Subset endothelial cells, based on unsupervised clusters
+so.mouse.EC <- subset(so.mouse, idents = c(0,2,4,5))
+
+# Rescale and recluster endothelial cells
+so.mouse.EC <- ScaleData(so.mouse.EC, verbose = FALSE)
+so.mouse.EC <- RunPCA(so.mouse.EC, npcs = 15, verbose = FALSE)
+so.mouse.EC <- RunUMAP(so.mouse.EC, reduction = "pca", dims = 1:15)
+so.mouse.EC <- FindNeighbors(so.mouse.EC, reduction = "pca", dims = 1:15)
+so.mouse.EC <- FindClusters(so.mouse.EC, resolution = 0.25)
+
+# Annotate the clusters by cell type
+so.mouse.EC$Subtype <- so.mouse.EC$seurat_clusters
+so.mouse.EC$Subtype <- recode(so.mouse.EC$Subtype, 
+                                "0" = "C",                
+                                "1"="V",
+                                "2"="C",
+                                "3"="A",
+                                "4"="C",
+                                "5"="C")
+
+# Define an order of cluster identities and relevel object
+subtype_levels <- c('A','C','V')
+so.mouse.EC$Subtype <- factor(x = so.mouse.EC$Subtype, levels = subtype_levels)
+Idents(so.mouse.EC) <- so.mouse.EC$Subtype
+
+# Make DEG comparisons between genotypes
+WT_KO_EC_plvap_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'EC_plvap'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_EC_AC_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'EC/AC'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_EC_PC_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'EC/PC'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_EC_hb_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'EC_hb'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_EC_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'EC'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_Fibroblast_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'Fibroblast'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_B_cell_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'B_cell'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_MNC_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'MNC'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_T_cell_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'T_cell'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_MG_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'MG'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_OLG_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'OLG'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_AC_significant <- subset(FindMarkers(subset(so.mouse,cell_type == 'AC'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+
+
+# Zonated endothelial cells
+WT_KO_A_significant <- subset(FindMarkers(subset(so.mouse.EC, Subtype == 'A'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_C_significant <- subset(FindMarkers(subset(so.mouse.EC, Subtype == 'C'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+WT_KO_V_significant <- subset(FindMarkers(subset(so.mouse.EC, Subtype == 'V'), ident.1 = "KO", ident.2 = "WT", group.by = "orig.ident", assay = 'RNA'), p_val_adj < 0.05)
+
+# Run CellChat Analysis on WT sample
+so.mouse.WT <- subset(so.mouse, orig.ident == 'WT')
+data.input = so.mouse.WT@assays$RNA@counts # normalized data matrix
+data.input <- normalizeData(data.input)
+meta = so.mouse.WT@meta.data # a dataframe with rownames containing cell meta data
+meta <- rename(meta, labels = cell_type)
+cellchat.WT <- createCellChat(object = data.input, meta = meta, group.by = "labels")
+cellchat.WT <- addMeta(cellchat.WT, meta = meta)
+cellchat.WT <- setIdent(cellchat.WT, ident.use = "labels") 
+levels(cellchat.WT@idents) # show factor levels of the cell labels
+groupSize <- as.numeric(table(cellchat.WT@idents))
+CellChatDB <- CellChatDB.mouse 
+cellchat.WT@DB <- CellChatDB
+cellchat.WT <- subsetData(cellchat.WT)
+future::plan("multiprocess", workers = 4) 
+cellchat.WT <- identifyOverExpressedGenes(cellchat.WT)
+cellchat.WT <- identifyOverExpressedInteractions(cellchat.WT)
+cellchat.WT <- computeCommunProb(cellchat.WT)
+cellchat.WT <- filterCommunication(cellchat.WT, min.cells = 10)
+cellchat.WT <- computeCommunProbPathway(cellchat.WT)
+cellchat.WT <- aggregateNet(cellchat.WT)
+
+# Run CellChat Analysis on KO sample
+so.mouse.KO <- subset(so.mouse, orig.ident == 'KO')
+data.input = so.mouse.WT@assays$RNA@counts # normalized data matrix
+data.input <- normalizeData(data.input)
+meta = so.mouse.WT@meta.data # a dataframe with rownames containing cell meta data
+meta <- rename(meta, labels = cell_type)
+cellchat.KO <- createCellChat(object = data.input, meta = meta, group.by = "labels")
+cellchat.KO <- addMeta(cellchat.KO, meta = meta)
+cellchat.KO <- setIdent(cellchat.KO, ident.use = "labels") 
+levels(cellchat.KO@idents) # show factor levels of the cell labels
+groupSize <- as.numeric(table(cellchat.KO@idents))
+CellChatDB <- CellChatDB.mouse 
+cellchat.KO@DB <- CellChatDB
+cellchat.KO <- subsetData(cellchat.KO)
+future::plan("multiprocess", workers = 4) 
+cellchat.KO <- identifyOverExpressedGenes(cellchat.KO)
+cellchat.KO <- identifyOverExpressedInteractions(cellchat.KO)
+cellchat.KO <- computeCommunProb(cellchat.KO)
+cellchat.KO <- filterCommunication(cellchat.KO, min.cells = 10)
+cellchat.KO <- computeCommunProbPathway(cellchat.KO)
+cellchat.KO <- aggregateNet(cellchat.KO)
+
+
+# Save datasets
+saveRDS(so.mouse, "2022.09.14_so.mouse.RDS")
+saveRDS(so.mouse.EC, "2022.09.14_so.mouse.EC.RDS")
+
+saveRDS(WT_KO_EC_significant, "2022.09.14_DEG_EC.RDS")
+saveRDS(WT_KO_MNC_significant, "2022.09.14_DEG_MNC.RDS")
+saveRDS(WT_KO_A_significant, "2022.09.14_DEG_A.RDS")
+saveRDS(WT_KO_AC_significant,"2022.09.14_DEG_AC.RDS")
+saveRDS(WT_KO_B_cell_significant,"2022.09.14_DEG_B_cell.RDS")
+saveRDS(WT_KO_C_significant,"2022.09.14_DEG_C.RDS")
+saveRDS(WT_KO_EC_AC_significant,"2022.09.14_DEG_EC_AC.RDS")
+saveRDS(WT_KO_EC_hb_significant,"2022.09.14_DEG_EC_hb.RDS")
+saveRDS(WT_KO_EC_PC_significant,"2022.09.14_DEG_EC_PC.RDS")
+saveRDS(WT_KO_EC_plvap_significant,"2022.09.14_DEG_EC_plvap.RDS")
+saveRDS(WT_KO_Fibroblast_significant,"2022.09.14_DEG_Fibroblast.RDS")
+saveRDS(WT_KO_MG_significant,"2022.09.14_DEG_MG.RDS")
+saveRDS(WT_KO_OLG_significant,"2022.09.14_DEG_OLG.RDS")
+saveRDS(WT_KO_T_cell_significant, "2022.09.14_DEG_T_cell.RDS")
+saveRDS(WT_KO_V_significant,"2022.09.14_DEG_V.RDS")
+
+write.csv(WT_KO_EC_significant, "2022.09.14_DEG_EC.csv")
+write.csv(WT_KO_MNC_significant, "2022.09.14_DEG_MNC.csv")
+write.csv(WT_KO_A_significant, "2022.09.14_DEG_A.csv")
+write.csv(WT_KO_AC_significant,"2022.09.14_DEG_AC.csv")
+write.csv(WT_KO_B_cell_significant,"2022.09.14_DEG_B_cell.csv")
+write.csv(WT_KO_C_significant,"2022.09.14_DEG_C.csv")
+write.csv(WT_KO_EC_AC_significant,"2022.09.14_DEG_EC_AC.csv")
+write.csv(WT_KO_EC_hb_significant,"2022.09.14_DEG_EC_hb.csv")
+write.csv(WT_KO_EC_PC_significant,"2022.09.14_DEG_EC_PC.csv")
+write.csv(WT_KO_EC_plvap_significant,"2022.09.14_DEG_EC_plvap.csv")
+write.csv(WT_KO_Fibroblast_significant,"2022.09.14_DEG_Fibroblast.csv")
+write.csv(WT_KO_MG_significant,"2022.09.14_DEG_MG.csv")
+write.csv(WT_KO_OLG_significant,"2022.09.14_DEG_OLG.csv")
+write.csv(WT_KO_T_cell_significant,"2022.09.14_DEG_T_cell.csv")
+write.csv(WT_KO_V_significant,"2022.09.14_DEG_V.csv")
+
+saveRDS(cellchat.WT, "2022.09.14_cellchat_WT.RDS")
+saveRDS(cellchat.KO, "2022.09.14_cellchat_KO.RDS")
