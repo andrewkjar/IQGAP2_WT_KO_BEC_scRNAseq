@@ -1,0 +1,555 @@
+```{r}
+library(Seurat)
+library(ggplot2)
+library(EnhancedVolcano)
+library(ggvenn)
+library(dplyr)
+library(pracma)
+library(stringr)
+library(igraph)
+library(RColorBrewer)
+library(scales)
+library(assertive.numbers)
+library(CellChat)
+```
+```{r}
+# Load in and prepare datasets
+#so.mouse.prefilter <- readRDS("2022.09.14_so.mouse_pre-DoubletFiltering.RDS")
+so.mouse <- readRDS("2022.09.14_so.mouse.RDS")
+so.mouse <- subset(so.mouse, cell_type %in% c('B_cell','EC','EC/AC','EC/PC','MG','MNC','T_cell'))
+cell_type_levels <- c('B_cell','EC','EC/AC','EC/PC','MG','MNC','T_cell')
+so.mouse$cell_type <- factor(x = so.mouse$cell_type, levels = cell_type_levels)
+genotype_levels <- c('WT','KO')
+so.mouse$orig.ident <- factor(x = so.mouse$orig.ident, levels = genotype_levels)
+
+so.mouse.WT <- subset(so.mouse,orig.ident == 'WT')
+so.mouse.KO <- subset(so.mouse, orig.ident == 'KO')
+```
+```{r}
+so.mouse.EC <- readRDS("2022.09.14_so.mouse.EC.RDS")
+
+so.mouse.EC.WT <- subset(so.mouse.EC,orig.ident == 'WT')
+so.mouse.EC.KO <- subset(so.mouse.EC, orig.ident == 'KO')
+```
+```{r}
+# Load in DEGs
+WT_KO_EC <- readRDS("2022.09.14_DEG_EC.RDS")
+WT_KO_A <- readRDS("2022.09.14_DEG_A.RDS")
+WT_KO_C <- readRDS("2022.09.14_DEG_C.RDS")
+WT_KO_V <- readRDS("2022.09.14_DEG_V.RDS")
+
+#WT_KO_EC_plvap <- readRDS("2022.09.14_DEG_EC_plvap.RDS")
+#WT_KO_EC_hb <- readRDS("2022.09.14_DEG_EC_hb.RDS")
+#WT_KO_EC_PC <- readRDS("2022.09.14_DEG_EC_PC.RDS")
+#WT_KO_EC_AC <- readRDS("2022.09.14_DEG_EC_AC.RDS")
+#WT_KO_AC <- readRDS("2022.09.14_DEG_AC.RDS")
+#WT_KO_B_cell <- readRDS("2022.09.14_DEG_B_cell.RDS")
+#WT_KO_T_cell <- readRDS("2022.09.14_DEG_T_cell.RDS")
+#WT_KO_MNC <- readRDS("2022.09.14_DEG_MNC.RDS")
+#WT_KO_MG <- readRDS("2022.09.14_DEG_MG.RDS")
+#WT_KO_OLG <- readRDS("2022.09.14_DEG_OLG.RDS")
+#WT_KO_Fibroblast <- readRDS("2022.09.14_DEG_Fibroblast.RDS")
+
+#WT_KO_top_and_bottom <- append(rownames(WT_KO_EC[order(-WT_KO_EC$avg_log2FC),])[1:5], rownames(WT_KO_EC[order(WT_KO_EC$avg_log2FC),])[1:5])
+
+# Marker data from Zhang and Vandlandewicjk
+#EC_genes <- read.csv("2022.08.03_EC_zone_genes.csv")
+#A1 <- as.character(EC_genes[1,3:100])
+#A1 <- A1[A1 != '']
+#A2 <- as.character(EC_genes[2,3:100])
+#A2 <- A2[A2 != '']
+#V <- as.character(EC_genes[3,3:100])
+#V <- V[V != '']
+#AV <- as.character(EC_genes[4,3:100])
+#AV <- AV[AV != '']
+#Cap <- as.character(EC_genes[5,3:100])
+#Cap <- Cap[Cap != '']
+#Vcap <- as.character(EC_genes[6,3:100])
+#Vcap <- Vcap[Vcap != '']
+
+# Set up graphing 'meta' parameters
+#cell_type_colors = c('magenta2','darkorchid1','darkorchid4','gold','darkgoldenrod','brown','darkturquoise','paleturquoise','green3','forestgreen','black','gray')
+cell_type_colors_barplot = c('darkturquoise','magenta2','darkgoldenrod','gold','forestgreen','green3','paleturquoise')
+subtype_colors = c('firebrick1','magenta2','royalblue1')
+sample_colors = c('gray','magenta2')
+WT_color = 'gray'
+KO_color = 'magenta2'
+
+# Set up gene lists, etc.
+cell_type_gene_list = c('Flt1','Cldn5','Cdh5','Plvap','Hbb-bs','Kcnj8','Aldoc','Gfap','Cd19','Plac8','Cd3g','Adgre4','Hp','Ccl6','Itgam','Fcgr3','Csf1r','Trem2','Olig2','Col1a1')
+genes_of_interest = c('Vcam1','Icam1','Pecam1','Cxcl12','Ly6a','Ctnnb1','Mfsd2a','Cldn5','Tjp1','Selp','Ackr1', 'Cdh5')
+junction_proteins = c('Cldn3','Cldn5','Tjp1','Tjp2','Tjp3','Ocln','F11r','Jam2','Jam3','Cdh1','Cdh5','Pecam1')
+transporter_proteins = c('Slc2a1','Slc16a1','Slc7a5','Slc7a1','Slc1a3','Lrp1','Abcc1','Abcb1a','Abcb1b')
+
+# Set up additional dataframes
+WT.numbers <- data.frame(
+  count = row.names(table(so.mouse.WT$cell_type)),
+  y = as.numeric(table(so.mouse.WT$cell_type))
+)
+KO.numbers <- data.frame(
+  count = row.names(table(so.mouse.KO$cell_type)),
+  y = as.numeric(table(so.mouse.KO$cell_type))
+)
+
+WT_ACV.numbers <- data.frame(
+  count = row.names(table(so.mouse.EC.WT$Subtype)),
+  y = as.numeric(table(so.mouse.EC.WT$Subtype))
+)
+KO_ACV.numbers <- data.frame(
+  count = row.names(table(so.mouse.EC.KO$Subtype)),
+  y = as.numeric(table(so.mouse.EC.KO$Subtype))
+)
+```
+```{r}
+# Initial QC and doublet detection figures
+tiff("2022.09.16_DimPlot_DoubletDetection.tiff", width = 5, height = 5, units = "in", res = 4000)
+DimPlot(so.mouse.prefilter, group.by = 'doublet', pt.size = 0.001, shuffle = T) + ggtitle('Doublet Detection')
+dev.off()
+
+tiff("2022.09.16_VlnPlot_QC_metrics.tiff", width = 10, height = 4, units = "in", res = 2000)
+VlnPlot(so.mouse, features = c('percent.mt','nFeature_RNA','nCount_RNA'), pt.size = 0, group.by = 'cell_type')
+dev.off()
+
+# Initial clustering and characterization figures
+tiff("2022.09.16_DimPlot_UnsupervisedClustering.tiff", width = 5, height = 5, units = "in", res = 4000) 
+DimPlot(so.mouse, pt.size = 0.001) + ggtitle('Unsupervised Clustering of Cells')
+dev.off()
+
+tiff("2022.09.16_DimPlot_CellAnnotation.tiff", width = 5, height = 5, units = "in", res = 4000) 
+DimPlot(so.mouse, group.by = 'cell_type', cols = cell_type_colors, pt.size = 0.001) + ggtitle('Cell Annotation')
+dev.off()
+
+tiff("2022.09.16_DimPlot_CellGenotype.tiff", width = 5, height = 5, units = "in", res = 4000) 
+DimPlot(so.mouse, group.by = 'orig.ident', cols = sample_colors, pt.size = 0.001, shuffle = T) + ggtitle('Cell Genotype')
+dev.off()
+
+tiff("2022.09.16_StackedVlnPlot_cell_types.tiff", width = 8, height = 8, units = "in", res = 2000)
+VlnPlot(so.mouse, group.by = 'cell_type', features = cell_type_gene_list, stack = T, flip = T, assay = 'RNA', cols = c('gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray','gray')) + theme(legend.position = 'none')
+dev.off()
+```
+```{r}
+tiff("2023.01.20_CellTypeNumbers.tiff", width = 5, height = 5, units = "in", res = 1000) 
+ggplot(WT.numbers, aes(x=count, y=y, fill = count)) +
+  geom_bar(stat = "identity", color = 'black') +
+  theme_light() +
+  scale_fill_manual(values = cell_type_colors_barplot) +
+  ylim(0,2300) +
+  coord_flip() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+  ) + ggtitle('WT') + NoLegend() +
+ggplot(KO.numbers, aes(x=count, y=y, fill = count)) +
+  geom_bar(stat = "identity", color = 'black') +
+  theme_light() +
+  scale_fill_manual(values = cell_type_colors_barplot) +
+  ylim(0,2300) +
+  coord_flip() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+  ) + ggtitle('KO') + NoLegend()
+dev.off()
+```
+```{r}
+tiff("2022.09.16_PieChart_cell_type.tiff", width = 5, height = 5, units = "in", res = 2000)
+pie(as.numeric(table(so.mouse$cell_type)), labels = c(''), col = cell_type_colors)
+dev.off()
+
+# Reclustering and closer interrogation of endothelial zones
+tiff("2022.09.16_DimPlot_EC_UnsupervisedClusters.tiff", width = 5, height = 5, units = "in", res = 4000) 
+DimPlot(subset(so.mouse.EC), group.by = 'seurat_clusters', pt.size = 0.001) + ggtitle('Unsupervised Clustering of Endothelial Cells')
+dev.off()
+
+tiff("2022.09.16_DimPlot_EC_CellAnnotations.tiff", width = 5, height = 5, units = "in", res = 4000) 
+DimPlot(subset(so.mouse.EC), group.by = 'Subtype', cols = subtype_colors, pt.size = 0.001) + ggtitle('Zonation of Endothelial Subtypes')
+dev.off()
+
+tiff("2022.09.16_DimPlot_EC_Genotypes.tiff", width = 5, height = 5, units = "in", res = 4000) 
+DimPlot(subset(so.mouse.EC), group.by = 'sample', cols = sample_colors, pt.size = 0.001)+ ggtitle('Endothelial Genotype Origins')
+dev.off()
+
+tiff("2022.09.16_ACV_Cell_Numbers.tiff", width = 5, height = 4, units = "in", res = 1000) 
+ggplot(WT_ACV.numbers, aes(x=count, y=y, fill = count)) +
+  geom_bar(stat = "identity", color = 'black') +
+  theme_light() +
+  scale_fill_manual(values = subtype_colors) +
+  coord_flip() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+  ) + ggtitle('WT') +
+  
+ggplot(KO_ACV.numbers, aes(x=count, y=y, fill = count)) +
+  geom_bar(stat = "identity", color = 'black') +
+  theme_light() +
+  scale_fill_manual(values = subtype_colors) +
+  coord_flip() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+  ) + ggtitle('KO') & NoLegend()
+dev.off()
+
+tiff("2022.09.16_DotPlot_Vandlandejick_genes.tiff", width = 8, height = 6, units = "in", res = 1000) 
+DotPlot(subset(so.mouse.EC, orig.ident == 'WT'), features = unique(c(A1,A2)), cols = c('purple','green3'), dot.scale = 2) + coord_flip() + ggtitle("Arterial") + DotPlot(subset(so.mouse.EC, orig.ident == 'WT'), features = unique(c(V, Vcap, Cap)), cols = c('purple','green3'), dot.scale = 2) + coord_flip() + ggtitle("Venous, Capillary") + DotPlot(subset(so.mouse.EC, orig.ident == 'WT'), features = unique(c(AV)), cols = c('purple','green3'), dot.scale = 2) + coord_flip() + ggtitle("Arterial-Venous") & NoLegend() & theme(axis.text.y = element_text(size = 6)) & theme(title = element_text(size = 6)) & theme(axis.text.x = element_text(size = 6))
+
+# Comparison of EC DEGs
+tiff("2022.09.16_VolcanoPlot_WT_KO_EC.tiff", width = 5, height = 5, units = "in", res = 2000)
+EnhancedVolcano(WT_KO_EC, lab = rownames(WT_KO_EC), x = 'avg_log2FC', y = 'p_val', col = c('black','black','black','red'), colAlpha = 1, title = 'KO v WT Endothelial Cells', subtitle = '', gridlines.major = F, gridlines.minor = F, selectLab = WT_KO_top_and_bottom, drawConnectors = T, labSize = 3, boxedLabels = T, arrowheads = F) + NoLegend()
+dev.off()
+
+tiff("2022.09.16_VolcanoPlot_WT_KO_A.tiff", width = 5, height = 5, units = "in", res = 2000)
+EnhancedVolcano(WT_KO_A, lab = rownames(WT_KO_A), x = 'avg_log2FC', y = 'p_val', col = c('black','black','black','red'), colAlpha = 1, title = 'KO v WT Arterial Endothelial Cells', subtitle = '', gridlines.major = F, gridlines.minor = F, labSize = 0, arrowheads = F, captionLabSize = 10, titleLabSize = 12) + NoLegend()
+dev.off()
+
+tiff("2022.09.16_VolcanoPlot_WT_KO_C.tiff", width = 5, height = 5, units = "in", res = 2000)
+EnhancedVolcano(WT_KO_C, lab = rownames(WT_KO_C), x = 'avg_log2FC', y = 'p_val', col = c('black','black','black','red'), colAlpha = 1, title = 'KO v WT Capillary Endothelial Cells', subtitle = '', gridlines.major = F, gridlines.minor = F, labSize = 0, arrowheads = F, captionLabSize = 10, titleLabSize = 12) + NoLegend()
+dev.off()
+
+tiff("2022.09.16_VolcanoPlot_WT_KO_V.tiff", width = 5, height = 5, units = "in", res = 2000)
+EnhancedVolcano(WT_KO_V, lab = rownames(WT_KO_V), x = 'avg_log2FC', y = 'p_val', col = c('black','black','black','red'), colAlpha = 1, title = 'KO v WT Venous Endothelial Cells', subtitle = '', gridlines.major = F, gridlines.minor = F, labSize = 0, arrowheads = F, captionLabSize = 10, titleLabSize = 12) + NoLegend()
+dev.off()
+
+tiff("2022.09.16_VennDiagram_ACV_DEGS.tiff", width = 5, height = 5, units = "in", res = 2000)
+ggvenn(list(A = row.names(WT_KO_A), C = row.names(WT_KO_C), V = row.names(WT_KO_V)), stroke_size = 0.75, text_size = 6, set_name_size = 7, show_percentage = F, fill_color = subtype_colors) + ggtitle("Differentially Regulated Genes by Zone and Condition") 
+dev.off()
+```
+```{r}
+# Set up statistical significance designations for split violin plots
+signif_designations <- function(p_vals){
+designations <- rep(NA, length(p_vals))
+for (i in 1:length(p_vals)) {
+  if (!is.na(p_vals[i])) {
+    if (p_vals[i] < 0.05) {
+    designations[i] <- '*'
+    }
+    if (p_vals[i] < 0.01) {
+    designations[i] <- '**'
+    }
+    if (p_vals[i] < 0.001){
+    designations[i] <- '***'
+    }
+  }
+}
+return(designations) 
+}
+WT_KO_A_p_vals <- WT_KO_A['p_val_adj']
+WT_KO_A_p_vals <- rename(WT_KO_A_p_vals,"A"='p_val_adj')
+WT_KO_A_p_vals$gene <- rownames(WT_KO_A_p_vals)
+WT_KO_C_p_vals <- WT_KO_C['p_val_adj']
+WT_KO_C_p_vals <- rename(WT_KO_C_p_vals,"C"='p_val_adj')
+WT_KO_C_p_vals$gene <- rownames(WT_KO_C_p_vals)
+WT_KO_V_p_vals <- WT_KO_V['p_val_adj']
+WT_KO_V_p_vals <- rename(WT_KO_V_p_vals,"V"='p_val_adj')
+WT_KO_V_p_vals$gene <- rownames(WT_KO_V_p_vals)
+WT_KO_ACV_p_vals <- merge(merge(WT_KO_A_p_vals, WT_KO_C_p_vals, all = T, by = 'gene'), WT_KO_V_p_vals, all = T, by = 'gene')
+WT_KO_ACV_p_vals$A_signif <- signif_designations(as.numeric(WT_KO_ACV_p_vals$A))
+WT_KO_ACV_p_vals$C_signif <- signif_designations(as.numeric(WT_KO_ACV_p_vals$C))
+WT_KO_ACV_p_vals$V_signif <- signif_designations(as.numeric(WT_KO_ACV_p_vals$V))
+
+# Loop through each gene of interest and plot them
+#for (currentgene in c(genes_of_interest,junction_proteins,transporter_proteins)) {
+for (currentgene in c('Cav1')) {
+currentlabel = c('','','')
+if (currentgene %in% WT_KO_ACV_p_vals$gene) {
+  currentlabel = as.character(subset(WT_KO_ACV_p_vals, gene == currentgene)[5:7])
+}
+currentplot <- VlnPlot(subset(so.mouse.EC, Subtype != 'unclassified'), features = currentgene, group.by = 'Subtype', split.by = 'sample', split.plot = T, pt.size = 0, ncol = 3, assay = 'RNA', cols = c(WT_color, KO_color)) +
+  theme(legend.position = 'right') + annotate("text",x = c(1,2,3), y = c(6,6,6), label = as.character(currentlabel)) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.10))) + ylim(0,6.2) + 
+  theme(axis.title.y = element_text(size = 8), plot.title = element_text(size = 10), axis.text.y = element_text(size = 8), axis.text.x = element_text(size = 8), axis.title.x = element_text(size = 8))
+name <- paste('2022.08.05_SplitVlnPlot_',currentgene,'.tiff', sep = "")
+tiff(name, width = 8, height = 4, units = "in", res = 1000)
+print(currentplot)
+dev.off()
+}
+```
+```{r}
+# Pathway analysis
+WT_KO_KEGG <- read.csv("2022.09.17_EC_DEG_KEGG_Project_wg_result1663453357/enrichment_results_wg_result1663453357_abbrev.csv")
+WT_KO_KEGG_pruned <- read.csv("2022.09.17_EC_DEG_KEGG_Project_wg_result1663453357/enriched_geneset_wsc_topsets_wg_result1663453357.csv")
+WT_KO_KEGG <- subset(WT_KO_KEGG, ï..geneSet %in% WT_KO_KEGG_pruned$ï....Coverage..0.967213114754098)
+
+WT_KO_graphdf <- matrix(nrow = length(WT_KO_KEGG$description) * (length(WT_KO_KEGG$description)- 1) , ncol = 3)
+k = 0
+for (i in 1:(length(WT_KO_KEGG$description)-1)) {
+  for (j in (i+1):length(WT_KO_KEGG$description)) {
+WT_KO_graphdf[k,1] <- WT_KO_KEGG$description[i]
+WT_KO_graphdf[k,2] <- WT_KO_KEGG$description[j]
+set_a <- str_split_fixed(WT_KO_KEGG$userId[i], ";", Inf)
+set_b <- str_split_fixed(WT_KO_KEGG$userId[j], ";", Inf)
+WT_KO_graphdf[k,3] <- length(intersect(set_a, set_b))
+k = 1 + k
+  }
+}
+WT_KO_graphdf <- subset(WT_KO_graphdf, WT_KO_graphdf[,3] != 0)
+colnames(WT_KO_graphdf) <- c('Pathway1','Pathway2','NumberEdges')
+WT_KO_graphdf <- as.data.frame(WT_KO_graphdf)
+network <- graph_from_data_frame(d=WT_KO_graphdf, directed=F) 
+V(network)$color <- scales::cscale(WT_KO_KEGG$pValue, seq_gradient_pal("red", "blue"))
+
+tiff("2022.09.16_WT_KO_EC_Pathway_Analysis.tiff", width = 8, height = 8, units = "in", res = 400, family = "Arial")
+set.seed(28)
+layout(matrix(1:2, nrow=1, ncol=2), widths=c(5,1), heights=0.5)
+z <- logspace(log10(min(WT_KO_KEGG$pValue) + 1e-10),log10(max(WT_KO_KEGG$pValue) + 1e-10))
+nrz <- nrow(z)
+ncz <- ncol(z)
+jet.colors <- colorRampPalette( c("red", "blue") )
+nbcol <- 100
+color <- jet.colors(nbcol)
+facetcol <- cut(z, nbcol)
+plot(network, edge.width = WT_KO_graphdf$NumberEdges, vertex.size = WT_KO_KEGG$size, vertex.label.color = 'black', vertex.label.cex = 0.75, vertex.label.font = 2, vertex.label.dist = 0, vertex.label.degree = 3/2 * pi) + title("KO vs WT Endothelial Cell KEGG Pathway Enrichment")
+labs <- levels(facetcol)
+tmp <- cbind(lower = as.numeric( sub("\\((.+),.*", "\\1", labs) ),
+      upper = as.numeric( sub("[^,]*,([^]]*)\\]", "\\1", labs) ))
+par(mar=c(5,0,5,5))
+image(x=1, y=rowMeans(tmp), matrix(rowMeans(tmp), nrow=1, ncol=nbcol), col=color, axes=F, xlab="", ylab="")
+axis(4)
+box()
+dev.off()
+
+```
+```{r}
+so.mouse.EC$subtype_ident <- paste(so.mouse.EC$orig.ident, so.mouse.EC$Subtype)
+subtype_levels <- c('WT A','WT C','WT V', 'KO A','KO C','KO V')
+so.mouse.EC$subtype_ident <- factor(x = so.mouse.EC$subtype_ident, levels = subtype_levels)
+DefaultAssay(so.mouse.EC) <- 'RNA'
+
+pathway = 'Immune system'
+pathway_genes = c('Actb','Actr3','Aldoa','Anxa2','Aprt','Arpc1b','Arpc2','Arpc3','B2m','Calm3','Calr','Canx','Cd14','Cd200','Cd34','Cd93','Crlf2','Csf1','Ctsa','Cxcl1','Cyb5r3','Cyba','Ddost','Flnb','Grn','H2-D1','H2-K1','H2-Q4','H2-Q6','H2-Q7','Hsp90b1','Hspa5','Icam1','Ifitm1','Ifitm2','Ifitm3','Il2rg','Jak3','Lgmn','Lrg1','Mif','Myh9','Nectin2','Nfkb2','Nme2','Npdc1','P4hb','Pdia3','Pglyrp1','Pkm','Plaur','Pnp','Prcp','Psmb8','Psmb9','Psme2','Relb','S100a11','Sdcbp','Tap1','Tnfrsf12a','Tnfrsf1a','Tuba1c','Tubb6','Txn1','Vcp')
+
+tiff("2023.01.20_DotPlot_ImmuneSystem_pathway.tiff", width = 6, height = 8, units = "in", res = 2000)
+DotPlot(so.mouse.EC, group.by = 'subtype_ident',cols = c('gray','magenta2'), features = pathway_genes) + coord_flip() + ggtitle(pathway)
+dev.off()
+
+pathway = 'TNF signaling pathway'
+pathway_genes = c('Csf1','Cxcl1','Icam1','Ptgs2','Vcam1')
+
+tiff("2023.01.20_DotPlot_TNF_signaling_pathway.tiff", width = 6, height = 4, units = "in", res = 2000)
+DotPlot(so.mouse.EC, group.by = 'subtype_ident',cols = c('gray','magenta2'), features = pathway_genes) + coord_flip() + ggtitle(pathway)
+dev.off()
+
+pathway = 'Cell adhesion molecules'
+pathway_genes = c('Cd34','H2-D1','H2-K1','H2-Q4','H2-Q7','H2-T22','Icam1','Nectin2','Pecam1','Vcam1')
+
+tiff("2023.01.20_DotPlot_Cell_adhesion_molecules_pathway.tiff", width = 6, height = 5, units = "in", res = 2000)
+DotPlot(so.mouse.EC, group.by = 'subtype_ident',cols = c('gray','magenta2'), features = pathway_genes) + coord_flip() + ggtitle(pathway)
+dev.off()
+
+pathway = 'Antigen processing and presentation'
+pathway_genes = c('B2m','Calr','Canx','H2-D1','H2-K1','H2-Q4','H2-Q7','H2-T22','Hspa5','Lgmn','Pdia3','Psme2','Tap1')
+
+tiff("2023.01.20_DotPlot_Antigent_processing_and_presentation_pathway.tiff", width = 6, height = 5, units = "in", res = 2000)
+DotPlot(so.mouse.EC, group.by = 'subtype_ident',cols = c('gray','magenta2'), features = pathway_genes) + coord_flip() + ggtitle(pathway)
+dev.off()
+
+pathway = 'Kaposi sarcoma-associated herpesvirus infection'
+pathway_genes = c('Calm3','Ccnd1','Cxcl1','Gngt2','H2-D1','H2-K1','H2-Q4','H2-Q7','H2-T22','Hif1a','Icam1','Ptgs2','Tnfrsf1a')
+
+tiff("2023.01.20_Kaposi_sarcoma-associated_herpesvirus_infection_pathway.tiff", width = 7, height = 5, units = "in", res = 2000)
+DotPlot(so.mouse.EC, group.by = 'subtype_ident',cols = c('gray','magenta2'), features = pathway_genes) + coord_flip() + ggtitle(pathway)
+dev.off()
+
+pathway = 'Human papillomavirus infection'
+pathway_genes = c('Ccnd1','Col4a1','Col4a2','H2-D1','H2-K1','H2-Q4','H2-Q7','H2-T22','Ptgs2','Vwf')
+
+tiff("2023.01.20_DotPlot_Human_papillomavirus_infection_pathway.tiff", width = 6, height = 5, units = "in", res = 2000)
+DotPlot(so.mouse.EC, group.by = 'subtype_ident',cols = c('gray','magenta2'), features = pathway_genes) + coord_flip() + ggtitle(pathway)
+dev.off()
+
+pathway = 'Protein processing in endoplasmic reticulum'
+pathway_genes = c('Calr','Canx','Ddost','Dnajb11','Dnajc10','Hsp90b1','Hspa5','P4hb','Pdia3','Pdia6','Rpn2','Rrbp1','Sec61b','Sec61g','Ssr4','Vcp','Xbp1
+')
+
+tiff("2023.01.20_DotPlot_Protein_processing_in_endoplasmic_reticulum_pathway.tiff", width = 6, height = 5, units = "in", res = 2000)
+DotPlot(so.mouse.EC, group.by = 'subtype_ident',cols = c('gray','magenta2'), features = pathway_genes) + coord_flip() + ggtitle(pathway)
+dev.off()
+
+pathway = 'Malaria'
+pathway_genes = c('Ackr1','Icam1','Vcam1')
+
+tiff("2023.01.20_DotPlot_Malaria_pathway.tiff", width = 6, height = 5, units = "in", res = 2000)
+DotPlot(so.mouse.EC, group.by = 'subtype_ident',cols = c('gray','magenta2'), features = pathway_genes) + coord_flip() + ggtitle(pathway)
+dev.off()
+
+pathway = 'Phagosome'
+pathway_genes = c('Actb','Calr','Canx','Cd14','Cyba','H2-D1','H2-K1','H2-Q4','H2-Q6','H2-Q7','H2-T22','Sec61b','Sec61g','Tap1','Tap2','Tuba1c','Tubb6')
+
+tiff("2023.01.20_DotPlot_Phagosome_pathway.tiff", width = 6, height = 5, units = "in", res = 2000)
+DotPlot(so.mouse.EC, group.by = 'subtype_ident',cols = c('gray','magenta2'), features = pathway_genes) + coord_flip() + ggtitle(pathway)
+dev.off()
+
+pathway = 'Human T-cell leukemia virus 1 infection'
+pathway_genes = c('Calr','Canx','Ccnd1','H2-D1','H2-K1','H2-Q4','H2-Q6','H2-Q7','H2-T22','Icam1','Il2rg','Jak3','Nfkb2','Ran','Relb','Tgfb1','Tnfrsf1a','Tspo','Vcam1','Xbp1')
+
+tiff("2023.01.20_DotPlot_Human_T-cell_leukemia_virus_1_infection_pathway.tiff", width = 6, height = 5, units = "in", res = 2000)
+DotPlot(so.mouse.EC, group.by = 'subtype_ident',cols = c('gray','magenta2'), features = pathway_genes) + coord_flip() + ggtitle(pathway)
+dev.off()
+
+pathway = 'Human immunodeficiency virus 1 infection'
+pathway_genes = c('B2m','Calm3','Calr','Cfl1','Gnai2','Gngt2','H2-D1','H2-K1','H2-Q4','H2-Q7','H2-T22','Pdia3','Tap1','Tnfrsf1a')
+
+tiff("2023.01.20_DotPlot_Human_immunodeficiency_virus_1_infection_pathway.tiff", width = 6, height = 5, units = "in", res = 2000)
+DotPlot(so.mouse.EC, group.by = 'subtype_ident',cols = c('gray','magenta2'), features = pathway_genes) + coord_flip() + ggtitle(pathway)
+dev.off()
+
+
+
+```
+```{r}
+
+# Comparison of all cluster DEGs
+tiff("2022.09.16_VolcanoPlot_WT_KO_EC_AC.tiff", width = 5, height = 5, units = "in", res = 2000)
+EnhancedVolcano(WT_KO_EC_AC, lab = rownames(WT_KO_EC_AC), x = 'avg_log2FC', y = 'p_val', col = c('black','black','black','red'), colAlpha = 1, title = 'KO v WT EC/AC', subtitle = '', gridlines.major = F, gridlines.minor = F, labSize = 0, arrowheads = F, captionLabSize = 10, titleLabSize = 12) + NoLegend()
+dev.off()
+
+tiff("2022.09.16_VolcanoPlot_WT_KO_EC_hb.tiff", width = 5, height = 5, units = "in", res = 2000)
+EnhancedVolcano(WT_KO_EC_hb, lab = rownames(WT_KO_EC_hb), x = 'avg_log2FC', y = 'p_val', col = c('black','black','black','red'), colAlpha = 1, title = 'KO v WT EC_hb', subtitle = '', gridlines.major = F, gridlines.minor = F, labSize = 0, arrowheads = F, captionLabSize = 10, titleLabSize = 12) + NoLegend()
+dev.off()
+
+tiff("2022.09.16_VolcanoPlot_WT_KO_EC_PC.tiff", width = 5, height = 5, units = "in", res = 2000)
+EnhancedVolcano(WT_KO_EC_PC, lab = rownames(WT_KO_EC_PC), x = 'avg_log2FC', y = 'p_val', col = c('black','black','black','red'), colAlpha = 1, title = 'KO v WT EC/PC', subtitle = '', gridlines.major = F, gridlines.minor = F, labSize = 0, arrowheads = F, captionLabSize = 10, titleLabSize = 12) + NoLegend()
+dev.off()
+
+tiff("2022.09.16_VolcanoPlot_WT_KO_MG.tiff", width = 5, height = 5, units = "in", res = 2000)
+EnhancedVolcano(WT_KO_MG, lab = rownames(WT_KO_MG), x = 'avg_log2FC', y = 'p_val', col = c('black','black','black','red'), colAlpha = 1, title = 'KO v WT MG', subtitle = '', gridlines.major = F, gridlines.minor = F, labSize = 0, arrowheads = F, captionLabSize = 10, titleLabSize = 12) + NoLegend()
+dev.off()
+
+tiff("2022.09.16_VolcanoPlot_WT_KO_MNC.tiff", width = 5, height = 5, units = "in", res = 2000)
+EnhancedVolcano(WT_KO_MNC, lab = rownames(WT_KO_MNC), x = 'avg_log2FC', y = 'p_val', col = c('black','black','black','red'), colAlpha = 1, title = 'KO v WT MNC', subtitle = '', gridlines.major = F, gridlines.minor = F, labSize = 0, arrowheads = F, captionLabSize = 10, titleLabSize = 12) + NoLegend()
+dev.off()
+
+tiff("2022.09.16_VolcanoPlot_WT_KO_T_cell.tiff", width = 5, height = 5, units = "in", res = 2000)
+EnhancedVolcano(WT_KO_T_cell, lab = rownames(WT_KO_T_cell), x = 'avg_log2FC', y = 'p_val', col = c('black','black','black','red'), colAlpha = 1, title = 'KO v WT T_cell', subtitle = '', gridlines.major = F, gridlines.minor = F, labSize = 0, arrowheads = F, captionLabSize = 10, titleLabSize = 12) + NoLegend()
+dev.off()
+
+tiff("2022.09.16_VolcanoPlot_WT_KO_B_cell.tiff", width = 5, height = 5, units = "in", res = 2000)
+EnhancedVolcano(WT_KO_B_cell, lab = rownames(WT_KO_B_cell), x = 'avg_log2FC', y = 'p_val', col = c('black','black','black','red'), colAlpha = 1, title = 'KO v WT B_cell', subtitle = '', gridlines.major = F, gridlines.minor = F, labSize = 0, arrowheads = F, captionLabSize = 10, titleLabSize = 12) + NoLegend()
+dev.off()
+
+# Cell Chat signalling analysis
+cellchat_WT <- readRDS("2022.09.14_cellchat_WT.RDS")
+cellchat_KO <- readRDS("2022.09.14_cellchat_KO.RDS")
+object.list <- list(WT = cellchat_WT, KO = cellchat_KO)
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+
+pos.dataset = "KO"
+features.name = pos.dataset
+cellchat <- identifyOverExpressedGenes(cellchat, group.dataset = "datasets", pos.dataset = pos.dataset, features.name = features.name, only.pos = FALSE, thresh.pc = 0.1, thresh.fc = 0.1, thresh.p = 1)
+net <- netMappingDEG(cellchat, features.name = features.name)
+net.up <- subsetCommunication(cellchat, net = net, datasets = "KO",ligand.logFC = 0.2, receptor.logFC = NULL)
+net.down <- subsetCommunication(cellchat, net = net, datasets = "WT",ligand.logFC = -0.1, receptor.logFC = -0.1)
+gene.up <- extractGeneSubsetFromPair(net.up, cellchat)
+gene.down <- extractGeneSubsetFromPair(net.down, cellchat)
+pairLR.use.up = net.up[, "interaction_name", drop = F]
+gg1 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.up, sources.use = 5, targets.use = c(8), comparison = c(2,1),  angle.x = 90, remove.isolate = T,title.name = paste0("Up-regulated signaling in ", names(object.list)[2]))
+pairLR.use.down = net.down[, "interaction_name", drop = F]
+
+tiff("2022.09.19_InteractionPlot_NumberofInteractions.tiff", width = 8, height = 4, units = "in", res = 1000)
+weight.max <- getMaxWeight(object.list, attribute = c("idents","count"))
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Number of interactions - ", names(object.list)[i]), color.use = c('gray','gray','gray','gray','magenta','gray','palegreen','green3','forestgreen','darkturquoise','gray','gray','gray')
+)
+}
+dev.off()
+
+tiff("2022.09.15_EC_MNC_cellchat_DotPlot.tiff",  width = 8, height = 8, units = "in", res = 400)
+netVisual_bubble(cellchat, pairLR.use = rbind(pairLR.use.down, pairLR.use.up) , sources.use = 5, targets.use = c(8), comparison = c(1,2),  angle.x = 0, remove.isolate = T,title.name = 'EC -> MNC signaling') + scale_x_discrete(labels = c('WT','KO'))
+dev.off()
+
+tiff("2022.09.15_MNC_EC_cellchat_DotPlot.tiff",  width = 8, height = 8, units = "in", res = 400)
+netVisual_bubble(cellchat, pairLR.use = rbind(pairLR.use.down, pairLR.use.up) , sources.use = 8, targets.use = c(5), comparison = c(1,2),  angle.x = 0, remove.isolate = T,title.name = 'MNC -> EC signaling') + scale_x_discrete(labels = c('WT','KO'))
+dev.off()
+
+tiff("2022.09.15_EC_T_cell_cellchat_DotPlot.tiff",  width = 8, height = 8, units = "in", res = 400)
+netVisual_bubble(cellchat, pairLR.use = rbind(pairLR.use.down, pairLR.use.up) , sources.use = 5, targets.use = c(9), comparison = c(1,2),  angle.x = 0, remove.isolate = T,title.name = 'EC -> T cell signaling') + scale_x_discrete(labels = c('WT','KO'))
+dev.off()
+
+tiff("2022.09.15_T_cell_EC_cellchat_DotPlot.tiff",  width = 8, height = 8, units = "in", res = 400)
+netVisual_bubble(cellchat, pairLR.use = rbind(pairLR.use.down, pairLR.use.up) , sources.use = 9, targets.use = c(5), comparison = c(1,2),  angle.x = 0, remove.isolate = T,title.name = 'T cell -> EC signaling') + scale_x_discrete(labels = c('WT','KO'))
+dev.off()
+
+tiff("2022.09.15_EC_MG_cellchat_DotPlot.tiff",  width = 8, height = 8, units = "in", res = 400)
+netVisual_bubble(cellchat, pairLR.use = rbind(pairLR.use.down, pairLR.use.up) , sources.use = 5, targets.use = c(10), comparison = c(1,2),  angle.x = 0, remove.isolate = T,title.name = 'EC -> MG signaling') + scale_x_discrete(labels = c('WT','KO'))
+dev.off()
+
+tiff("2022.09.15_MG_EC_cellchat_DotPlot.tiff",  width = 8, height = 8, units = "in", res = 400)
+netVisual_bubble(cellchat, pairLR.use = rbind(pairLR.use.down, pairLR.use.up) , sources.use = 10, targets.use = c(5), comparison = c(1,2),  angle.x = 0, remove.isolate = T,title.name = 'MG -> EC signaling') + scale_x_discrete(labels = c('WT','KO'))
+dev.off()
+
+tiff("2022.09.15_EC_B_cell_cellchat_DotPlot.tiff",  width = 8, height = 8, units = "in", res = 400)
+netVisual_bubble(cellchat, pairLR.use = rbind(pairLR.use.down, pairLR.use.up) , sources.use = 5, targets.use = c(7), comparison = c(1,2),  angle.x = 0, remove.isolate = T,title.name = 'EC -> B cell signaling') + scale_x_discrete(labels = c('WT','KO'))
+dev.off()
+
+tiff("2022.09.15_B_cell_EC_cellchat_DotPlot.tiff",  width = 8, height = 8, units = "in", res = 400)
+netVisual_bubble(cellchat, pairLR.use = rbind(pairLR.use.down, pairLR.use.up) , sources.use = 7, targets.use = c(5), comparison = c(1,2),  angle.x = 0, remove.isolate = T,title.name = 'B cell -> EC signaling') + scale_x_discrete(labels = c('WT','KO'))
+dev.off()
+
+tiff("2022.09.15_EC_immune_cellchat_DotPlot.tiff",  width = 8, height = 8, units = "in", res = 400)
+netVisual_bubble(cellchat, pairLR.use = rbind(pairLR.use.down, pairLR.use.up) , sources.use = 5, targets.use = c(7:10), comparison = c(1,2),  angle.x = 90, remove.isolate = T,title.name = 'EC -> Immune signaling') + scale_x_discrete(labels = c('WT B cell','KO B cell', 'WT MNC','KO MNC','WT T cell','KO T cell','WT MG','KO MG'))
+dev.off()
+
+tiff("2022.09.15_immune_EC_cellchat_DotPlot.tiff",  width = 8, height = 8, units = "in", res = 400)
+netVisual_bubble(cellchat, pairLR.use = rbind(pairLR.use.down, pairLR.use.up) , sources.use = 7:10, targets.use = c(5), comparison = c(1,2),  angle.x = 90, remove.isolate = T,title.name = 'Immune -> EC signaling') + scale_x_discrete(labels = c('WT B cell','KO B cell', 'WT MNC','KO MNC','WT T cell','KO T cell','WT MG','KO MG'))
+dev.off()
+
+cellchat_sub <- subsetCellChat(cellchat, idents.use = c('EC','MNC'))
+tiff("2022.09.15_EC_MNC_cellchat_BarChart.tiff",  width = 4, height = 4, units = "in", res = 400)
+compareInteractions(cellchat_sub, show.legend = F, group = c(1,2), measure = "weight",color.use = c(WT_color, KO_color)) + ggtitle("EC - MNC interactions") + scale_y_continuous(limits = c(0,5), expand = c(0,0))
+dev.off()
+tiff("2022.09.15_EC_MNC_cellchatstrength_BarChart.tiff",  width = 4, height = 4, units = "in", res = 400)
+compareInteractions(cellchat_sub, show.legend = F, group = c(1,2), color.use = c(WT_color, KO_color)) + ggtitle("EC - MNC interactions") + scale_y_continuous(limits = c(0,150), expand = c(0,0))
+dev.off()
+
+cellchat_sub <- subsetCellChat(cellchat, idents.use = c('EC','B_cell'))
+tiff("2022.09.15_EC_B_cell_cellchat_BarChart.tiff",  width = 4, height = 4, units = "in", res = 400)
+compareInteractions(cellchat_sub, show.legend = F, group = c(1,2), measure = "weight",color.use = c(WT_color, KO_color)) + ggtitle("EC - B cell interactions") + scale_y_continuous(limits = c(0,5), expand = c(0,0))
+dev.off()
+tiff("2022.09.15_EC_B_cell_cellchatstrength_BarChart.tiff",  width = 4, height = 4, units = "in", res = 400)
+compareInteractions(cellchat_sub, show.legend = F, group = c(1,2), color.use = c(WT_color, KO_color)) + ggtitle("EC - B cell interactions") + scale_y_continuous(limits = c(0,150), expand = c(0,0))
+dev.off()
+
+cellchat_sub <- subsetCellChat(cellchat, idents.use = c('EC','MG'))
+tiff("2022.09.15_EC_MG_cellchat_BarChart.tiff",  width = 4, height = 4, units = "in", res = 400)
+compareInteractions(cellchat_sub, show.legend = F, group = c(1,2), measure = "weight",color.use = c(WT_color, KO_color)) + ggtitle("EC - MG interactions") + scale_y_continuous(limits = c(0,5), expand = c(0,0))
+dev.off()
+tiff("2022.09.15_EC_MG_cellchatstrength_BarChart.tiff",  width = 4, height = 4, units = "in", res = 400)
+compareInteractions(cellchat_sub, show.legend = F, group = c(1,2), color.use = c(WT_color, KO_color)) + ggtitle("EC - MG interactions") + scale_y_continuous(limits = c(0,150), expand = c(0,0))
+dev.off()
+
+cellchat_sub <- subsetCellChat(cellchat, idents.use = c('EC','T_cell'))
+tiff("2022.09.15_EC_T_cell_cellchat_BarChart.tiff",  width = 4, height = 4, units = "in", res = 400)
+compareInteractions(cellchat_sub, show.legend = F, group = c(1,2), measure = "weight",color.use = c(WT_color, KO_color)) + ggtitle("EC - T cell interactions") + scale_y_continuous(limits = c(0,5), expand = c(0,0))
+dev.off()
+tiff("2022.09.15_EC_T_cell_cellchatstrength_BarChart.tiff",  width = 4, height = 4, units = "in", res = 400)
+compareInteractions(cellchat_sub, show.legend = F, group = c(1,2), color.use = c(WT_color, KO_color)) + ggtitle("EC - T cell interactions") + scale_y_continuous(limits = c(0,150), expand = c(0,0))
+dev.off()
+```
+```{r}
+VlnPlot(so.mouse.EC, split.by = 'orig.ident', features = c('Cav2'))
+```
+
+```{r}
+tiff("2023.01.23_DimPlot_ACV_features.tiff", width = 8, height = 9, units = "in", res = 2000)
+FeaturePlot(so.mouse.EC, feature = c('Flt1','Cldn5','Cdh5','Hey1','Bmx','Sema3g','Slc16a1','Car4','Mfsd2a','Icam1','Vcam1','Vwf'), order = T, ncol = 3)
+dev.off()
+
+tiff("2023.01.23_DimPlot_ACV_features_WT_only.tiff", width = 8, height = 9, units = "in", res = 2000)
+FeaturePlot(subset(so.mouse.EC, orig.ident == 'WT'), feature = c('Flt1','Cldn5','Cdh5','Hey1','Bmx','Sema3g','Slc16a1','Car4','Mfsd2a','Icam1','Vcam1','Vwf'), order = T, ncol = 3)
+dev.off()
+```
+
