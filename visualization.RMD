@@ -245,7 +245,7 @@ for (i in 1:length(p_vals)) {
   }
  }
 return(designations) 
-} \
+}
 
 WT_KO_A_p_vals <- WT_KO_A['p_val_adj']
 WT_KO_A_p_vals <- rename(WT_KO_A_p_vals,"A"='p_val_adj')
