@@ -13,7 +13,7 @@ library(assertive.numbers)
 library(CellChat)
 
 # Load in and prepare datasets
-#so.mouse.prefilter <- readRDS("2022.09.14_so.mouse_pre-DoubletFiltering.RDS")
+so.mouse.prefilter <- readRDS("2022.09.14_so.mouse_pre-DoubletFiltering.RDS")
 so.mouse <- readRDS("2022.09.14_so.mouse.RDS")
 so.mouse <- subset(so.mouse, cell_type %in% c('B_cell','EC','EC/AC','EC/PC','MG','MNC','T_cell'))
 cell_type_levels <- c('B_cell','EC','EC/AC','EC/PC','MG','MNC','T_cell')
