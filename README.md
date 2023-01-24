@@ -29,7 +29,7 @@ other attached packages:
  [2] CellChat_1.5.0         
  [3] Biobase_2.54.0         
  [4] BiocGenerics_0.40.0    
- [5] assertive.numbers_0.0-2
+ [5] assertive.numbers_0.0-2 \
  [6] RColorBrewer_1.1-3     
  [7] igraph_1.3.4           
  [8] stringr_1.4.0          
