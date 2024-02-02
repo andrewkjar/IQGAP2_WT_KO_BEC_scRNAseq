@@ -1,8 +1,8 @@
 # IQGAP2_WT_KO_BEC_scRNAseq
 Analysis pipeline for scRNAseq datasets published by Katdare et al. (2023)
 
-[Final paper citation] \
-[Raw data location]
+[Final paper citation] \ https://www.biorxiv.org/content/10.1101/2023.02.07.527394v1.full
+[Raw data location] \ ArrayExpress under accession number E-MTAB-12687
 
 Session info
 ---
